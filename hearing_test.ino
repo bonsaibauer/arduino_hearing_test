@@ -66,10 +66,13 @@ void loop() {
     updateDisplay(); // Anzeige aktualisieren
   }
 
-  // S1-Button-Abfrage für Frequenzwechsel
+  // S1-Button-Abfrage für Frequenzwechsel oder Speichern
   if (digitalRead(swButtonPin) == LOW) {
     delay(50); // Entprellungszeit
     if (digitalRead(swButtonPin) == LOW) { // Prüfen, ob S1 noch gedrückt ist
+      if (currentVolume >= 0 && currentFrequencyIndex > 0) {
+        sendToSerial(currentFrequencyIndex, currentVolume); // Werte über serielle Verbindung senden
+      }
       nextFrequency(); // Nächste Frequenz aufrufen
       while (digitalRead(swButtonPin) == LOW); // Warten, bis der Button losgelassen wird
     }
@@ -127,4 +130,13 @@ void showEarIndicator(const char* earText) {
   lcd.clear();
   lcd.setCursor(4, 0);
   lcd.print(earText); // Zeige "Rechtes Ohr" oder "Linkes Ohr"
+}
+
+void sendToSerial(int frequencyIndex, int volume) {
+  // Werte über serielle Verbindung im CSV-Format ausgeben
+  Serial.print(frequencies[frequencyIndex - 1]);
+  Serial.print(",");
+  Serial.print(volume);
+  Serial.print(",");
+  Serial.println(isLeftEar ? "L" : "R"); // L oder R für das Ohr
 }
