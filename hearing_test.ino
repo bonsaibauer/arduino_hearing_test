@@ -1,120 +1,130 @@
-#include <Arduino.h>
-#include <SoftwareSerial.h>
-#include <DFRobotDFPlayerMini.h>
-#include <LiquidCrystal_I2C.h>
+#include <Arduino.h> //AIPIC_Opta 1.2.0, ArduinoRS485 1.1.0, Arduino_DebugUtils 1.4.0, Arduino_Opta_Blueprint 0.2.5, Firmata 2.5.9
+#include <SoftwareSerial.h> //EspSoftwareSerial 8.1.0, Arduino_SerialUpdater 0.0.1
+#include <DFRobotDFPlayerMini.h> //DFRobotDFPlayerMini 1.0.6
+#include <LiquidCrystal_I2C.h> //LiquidCrystal I2C 1.1.2
 
-SoftwareSerial mySoftwareSerial(10, 11); // RX, TX - Software Serial zum Kommunizieren mit dem DFPlayer Mini
-DFRobotDFPlayerMini myDFPlayer; // DFPlayer Mini-Bibliothek für die Audiosteuerung umbenenen in myDFPlayer
+SoftwareSerial mySoftwareSerial(10, 11); // RX, TX - Software Serial zur Kommunikation mit dem DFPlayer Mini
+DFRobotDFPlayerMini myDFPlayer; // DFPlayer Mini-Bibliothek zur Audiosteuerung
 
-LiquidCrystal_I2C lcd(0x27, 16, 2); // I2C-LCD-Bildschirm zur Anzeige von Informationen (16x2)
+LiquidCrystal_I2C lcd(0x27, 16, 2); // I2C-LCD-Bildschirm zur Anzeige (16x2)
 
-const int buttonIncreasePin = 5; // Pin zur Erhöhung des Volumens
-const int buttonDecreasePin = 6; // Pin zur Verringerung des Volumens
-const int swButtonPin = 2; // Pin für den Schalter
+const int swButtonPin = 2; // Pin für den S1-Button
+int currentVolume = 0; // Aktuelle Lautstärke (0 bis 30)
+int currentFrequencyIndex = 1; // Aktuelle Frequenzindex (1 = 125 Hz, usw.)
+bool isLeftEar = false; // Variable zur Unterscheidung zwischen rechtem und linkem Ohr
 
-int currentVolume = 0; // Aktuelle Lautstärke (Wert zwischen 0 und 30)
-int currentFrequencyIndex = 1; // Aktuelle Frequenz (0 = 0000, 1 = 125 Hz, 2 = 250 Hz, usw.)
-
-// Array mit den Frequenzen in Hertz
-const unsigned int frequencies[] = {0, 125, 250, 500, 1000, 2000, 3000, 4000, 6000, 8000, 10000, 12000, 125, 250, 500, 1000, 2000, 3000, 4000, 6000, 8000, 10000, 12000};
-
-// Array mit 'R' und 'L' entsprechend den Frequenzen (ASCII-Werte)
-const char side[] = {' ', 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 76, 76, 76, 76, 76, 76, 76, 76, 76, 76, 76};
-
-bool completed = false; // Variable, um den Durchgang abzuschließen
+// Frequenzen
+const unsigned int frequencies[] = {125, 250, 500, 1000, 2000, 3000, 4000, 6000, 8000, 10000, 12000};
+bool completed = false; // Durchgang abgeschlossen
+unsigned long lastVolumeIncreaseTime = 0; // Zeitstempel für die Lautstärkeanpassung
 
 void setup() {
-  mySoftwareSerial.begin(9600); // Initialisieren der Software Serial-Kommunikation
-  Serial.begin(9600); // Initialisieren der seriellen Kommunikation
+  mySoftwareSerial.begin(9600); // Software Serial-Kommunikation
+  Serial.begin(9600); // Serielle Kommunikation
 
-  lcd.init(); // Initialisieren des LCD-Bildschirms
-  lcd.backlight(); // Einschalten der Hintergrundbeleuchtung des LCD
+  lcd.init(); // LCD initialisieren
+  lcd.backlight(); // LCD-Hintergrundbeleuchtung einschalten
 
-  // Anfangsnachricht auf dem LCD-Bildschirm
+  // Anfangsnachricht auf dem LCD
   lcd.setCursor(1, 0);
   lcd.print("S1 zum starten");
   lcd.setCursor(4, 1);
   lcd.print("druecken!");
 
-  pinMode(buttonIncreasePin, INPUT_PULLUP); // Konfigurieren des Pin zum Erhöhen des Volumens als Eingang mit Pull-Up-Widerstand
-  pinMode(buttonDecreasePin, INPUT_PULLUP); // Konfigurieren des Pin zum Verringern des Volumens als Eingang mit Pull-Up-Widerstand
-  pinMode(swButtonPin, INPUT_PULLUP); // Konfigurieren des Schalter-Pins als Eingang mit Pull-Up-Widerstand
+  pinMode(swButtonPin, INPUT_PULLUP); // S1 als Eingang mit Pull-Up-Widerstand
 
   // Warten auf das Drücken von S1 zum Starten
   while (digitalRead(swButtonPin) == HIGH) {
     // Warten, bis der Knopf gedrückt wird
   }
 
+  // "Rechtes Ohr" anzeigen, bevor der rechte Ohrtest startet
+  showEarIndicator("Rechtes Ohr");
+  delay(1000); // Anzeige für eine Sekunde
+
+  // Start des Lautstärkentests
   if (!myDFPlayer.begin(mySoftwareSerial)) {
-    // Wenn die Kommunikation mit dem DFPlayer Mini fehlschlägt, eine Fehlermeldung ausgeben
     Serial.println(F("Unable to begin:"));
-    Serial.println(F("1. Please recheck the connection!"));
-    Serial.println(F("2. Please insert the SD card!"));
-    while (true); // In einer Endlosschleife bleiben
+    Serial.println(F("1. Check connection!"));
+    Serial.println(F("2. Insert SD card!"));
+    while (true); // Endlosschleife bei Fehler
   }
-  myDFPlayer.volume(currentVolume); // Setzen der initiale Lautstärke
-  myDFPlayer.play(1); // Starten der Audiowiedergabe mit Track 0001 (125 Hz)
-  updateDisplay(); // Aktualisieren der Anzeige auf dem LCD
+
+  myDFPlayer.volume(currentVolume); // Initiale Lautstärke setzen
+  myDFPlayer.play(currentFrequencyIndex); // Erster Frequenz-Track
+  updateDisplay(); // LCD-Anzeige aktualisieren
 }
 
 void loop() {
-  // Überwachen der Tasten zum Erhöhen und Verringern des Volumens
-  int increaseButtonState = digitalRead(buttonIncreasePin);
-  int decreaseButtonState = digitalRead(buttonDecreasePin);
+  unsigned long currentTime = millis();
 
-  if (increaseButtonState == LOW && currentVolume < 30) {
-    currentVolume = constrain(currentVolume + 1, 0, 30); // Erhöhen der Lautstärke, aber nicht über 30
-    myDFPlayer.volume(currentVolume); // Aktualisieren der Lautstärke
-    updateDisplay(); // Aktualisieren der Anzeige
-    delay(250); // Verzögerung zur Entprellung
+  // Automatische Lautstärkeerhöhung alle 800 ms
+  if (currentTime - lastVolumeIncreaseTime >= 800 && currentVolume < 30) {
+    lastVolumeIncreaseTime = currentTime; // Zeitstempel aktualisieren
+    currentVolume++; // Lautstärke erhöhen
+    myDFPlayer.volume(currentVolume); // Lautstärke einstellen
+    updateDisplay(); // Anzeige aktualisieren
   }
 
-  if (decreaseButtonState == LOW && currentVolume > 0) {
-    currentVolume = constrain(currentVolume - 1, 0, 30); // Verringern der Lautstärke, aber nicht unter 0
-    myDFPlayer.volume(currentVolume); // Aktualisieren der Lautstärke
-    updateDisplay(); // Aktualisieren der Anzeige
-    delay(250); // Verzögerung zur Entprellung
-  }
-
-  // Überwachen des SW-Buttons, um den aktuellen Track weiterzuschalten
+  // S1-Button-Abfrage für Frequenzwechsel
   if (digitalRead(swButtonPin) == LOW) {
-    // Überprüfen, ob es sich nicht um die nullte Frequenz handelt, bevor Daten gespeichert werden
-    if (currentFrequencyIndex > 0) {
-      Serial.println(currentVolume); // Ausgabe des Lautstärkewerts in CSV-Format
+    delay(50); // Entprellungszeit
+    if (digitalRead(swButtonPin) == LOW) { // Prüfen, ob S1 noch gedrückt ist
+      nextFrequency(); // Nächste Frequenz aufrufen
+      while (digitalRead(swButtonPin) == LOW); // Warten, bis der Button losgelassen wird
     }
-  
-    currentFrequencyIndex++;
-    if (currentFrequencyIndex >= sizeof(frequencies) / sizeof(frequencies[0])) {
-      // Wenn der Durchgang abgeschlossen ist
-      if (!completed) {
-        completed = true;
-        lcd.clear(); // Löschen des LCD-Bildschirms
-        lcd.setCursor(4, 0);
-        lcd.print("Ende");
-        lcd.setCursor(2, 1);
-        lcd.print("Durchgang");
-        while (true) {
-          // In einer Endlosschleife bleiben, um das Programm anzuhalten
-        }
-      }
-      currentFrequencyIndex = 1; // Zurück auf 125 Hz, wenn das Ende erreicht ist (Index 0 überspringen)
-    }
-    myDFPlayer.play(currentFrequencyIndex); // Abspielen des entsprechenden Tracks
-    updateDisplay(); // Aktualisieren der Anzeige
-    delay(500); // Verzögerung zur Entprellung
   }
 }
 
 void updateDisplay() {
-  lcd.clear(); // Löschen des LCD-Bildschirms
+  lcd.clear(); // LCD löschen
   lcd.setCursor(0, 0);
   lcd.print("Volume:");
-  lcd.print(currentVolume); // Anzeige der aktuellen Lautstärke
+  lcd.print(currentVolume); // Aktuelle Lautstärke anzeigen
 
   lcd.setCursor(0, 1);
   lcd.print("Frequenz:");
-  lcd.print(frequencies[currentFrequencyIndex]); // Anzeige der aktuellen Frequenz
+  lcd.print(frequencies[currentFrequencyIndex - 1]); // Aktuelle Frequenz anzeigen
   lcd.print("Hz");
   lcd.setCursor(15, 0);
-  lcd.print(char(side[currentFrequencyIndex])); // Wandeln des ASCII-Werts in ein Zeichen um und Anzeige
+  lcd.print(isLeftEar ? 'L' : 'R'); // 'L' für links, 'R' für rechts
+}
+
+void nextFrequency() {
+  // Lautstärke zurücksetzen und ggf. zwischen rechtem und linkem Ohr wechseln
+  currentVolume = 0; // Lautstärke zurücksetzen
+  myDFPlayer.volume(currentVolume); // Lautstärke setzen
+
+  // Falls alle Frequenzen für das rechte Ohr durchlaufen sind, zum linken Ohr wechseln
+  if (currentFrequencyIndex >= sizeof(frequencies) / sizeof(frequencies[0])) {
+    if (!isLeftEar) {
+      showEarIndicator("Linkes Ohr"); // Linkes Ohr anzeigen
+      delay(1000); // Anzeige für eine Sekunde
+      isLeftEar = true; // Wechselt zum linken Ohr
+      currentFrequencyIndex = 1; // Frequenzindex auf Anfang setzen
+    } else {
+      // Wenn alle Frequenzen für beide Ohren durchlaufen sind
+      if (!completed) {
+        completed = true;
+        lcd.clear(); // LCD löschen
+        lcd.setCursor(4, 0);
+        lcd.print("Ende");
+        lcd.setCursor(2, 1);
+        lcd.print("Durchgang");
+        while (true) {} // Endlosschleife zur Beendigung
+      }
+    }
+  } else {
+    currentFrequencyIndex++; // Zum nächsten Frequenzindex wechseln
+  }
+
+  myDFPlayer.play(currentFrequencyIndex); // Neue Frequenz abspielen
+  updateDisplay(); // LCD aktualisieren
+  delay(500); // Entprellungszeit
+}
+
+void showEarIndicator(const char* earText) {
+  lcd.clear();
+  lcd.setCursor(4, 0);
+  lcd.print(earText); // Zeige "Rechtes Ohr" oder "Linkes Ohr"
 }
